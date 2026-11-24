@@ -1,0 +1,8 @@
+packages:
+  - apps/*
+  - packages/*
+  - spikes/*
+
+# Exact versions only; lockfile is the source of truth (TDD §2.1 version policy).
+savePrefix: ''
+engineStrict: true

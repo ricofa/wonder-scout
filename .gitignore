@@ -1,0 +1,25 @@
+# Dependencies & build output
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# Secrets — only .env.example is committed
+.env
+.env.*
+!.env.example
+
+# Data: only synthetic fixtures may be committed (TDD §2.2, §11.2)
+datasets/*
+!datasets/synthetic/
+*.csv
+!datasets/synthetic/**/*.csv
+
+# Logs / OS / editor
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.DS_Store
+*:Zone.Identifier
+.vscode/
+.idea/
