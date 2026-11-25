@@ -897,7 +897,7 @@ Payload indexes: **deferred** to the production knowledge-base work, as instruct
 | 14 | Lens traces correlated and safely redacted | **PASS** | §15.3 (0 orphans; 0 key hits) |
 | 15 | Secrets not tracked or exposed | **PASS** | §15.3 and §15.7 |
 | 16 | MCP processes and Lens clients clean up | **PASS** | `mcp-transport` child exit; `lens` flush and close `ok` |
-| 17 | Studio API registration and execution | **PASS** (API) | §15.2 endpoints 200; `studio` offline key-absence tests |
+| 17 | Studio API registration, execution, and chat (streaming and non-streaming) | **PASS** (API) | §15.2 endpoints 200; §15.11 chat fix and live chat tests |
 | 18 | Lens dashboard visual check | **PENDING USER VERIFICATION** | not opened in a browser |
 | 19 | Studio playground visual check (run, graph, traces) | **PENDING USER VERIFICATION** | not opened in a browser |
 | 20 | Qdrant payload indexes | **NOT DONE (deferred by design)** | §15.4 |
@@ -952,3 +952,13 @@ Neither check is counted as PASS until done.
 2. Payload indexes and the token-based chunking are built into the Data Foundation work before the production knowledge base is loaded.
 
 Stop point: Prompt 06 is complete. Prompt 07 (or the next milestone) was not started.
+
+### 15.11 Correction: Studio chat failed with HTTP 500 (fixed after Prompt 06)
+
+- **Symptom:** the Studio playground chat returned HTTP 500 with `This completion model does not support streaming`. Pipeline and MCP tools in Studio worked.
+- **Cause (our code):** `opaqueModelForStudio` in `src/studio/session.ts` forwarded `completion` and `traceRequest` but not `streamCompletion`. Core's `Agent.stream()` checks `typeof model.streamCompletion === "function"`, so the guard failed locally, before any gateway call. The real model had the method.
+- **Fix:** the wrapper forwards `streamCompletion` only when the real model implements it (`isStreamingCompletionModel`), and calls it through the closure so the key is not exposed.
+- **Evidence:** offline `studio.test.ts`: wrapper exposes `streamCompletion` for a streaming model and not for a non-streaming one; key absent. Live `studio-chat.live.test.ts` (real model, Studio `/agents/synthetic-scouting-agent/runs`): non-streaming run → 200 with a locally validated structured reply; streaming run → 200 from `stream_start` through `run_start`, `text_delta`, `run_end` to `stream_end`, with no error events.
+- **Matrix correction:** row 17 earlier said Studio chat was PASS, but chat had not been exercised. It is now covered by the live test above.
+- **Not yet verified:** the playground UI in a browser (still PENDING USER VERIFICATION, §15.9).
+- **Model-level note:** the agent's structured output was accepted by local validation in these runs. Devscale still does not guarantee JSON, so the local check remains mandatory.

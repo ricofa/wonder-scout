@@ -1,4 +1,5 @@
-import type { Agent, CompletionModel } from '@anvia/core';
+import type { Agent } from '@anvia/core';
+import { isStreamingCompletionModel, type CompletionModel, type StreamingCompletionModel } from '@anvia/core/completion';
 import { Studio, StudioTraceObserver, createInMemoryStudioStore, type StudioTarget } from '@anvia/studio';
 import type { McpServer } from '@anvia/mcp';
 import { createScoutingAgent } from '../agent.js';
@@ -10,8 +11,13 @@ import { createScoutingPipeline } from '../pipeline.js';
  * key as a plain string. This wrapper exposes only metadata and delegates calls. The real model lives
  * in a closure, so it is not a property Studio can walk or serialize.
  */
-export function opaqueModelForStudio(real: CompletionModel): CompletionModel {
-  const wrapper: CompletionModel = {
+export function opaqueModelForStudio(
+  real: CompletionModel,
+): CompletionModel & Partial<Pick<StreamingCompletionModel, 'streamCompletion'>> {
+  // Core's Agent.stream() requires a `streamCompletion` function (not just capabilities.streaming).
+  // Forward it only when the real model has it, so the wrapper never claims streaming it cannot do.
+  const streaming = isStreamingCompletionModel(real) ? real : undefined;
+  const wrapper: CompletionModel & Partial<Pick<StreamingCompletionModel, 'streamCompletion'>> = {
     provider: real.provider,
     modelId: real.modelId,
     capabilities: real.capabilities,
@@ -19,6 +25,9 @@ export function opaqueModelForStudio(real: CompletionModel): CompletionModel {
     ...(real.controls === undefined ? {} : { controls: real.controls }),
     completion: (request, options) => real.completion(request, options),
     ...(real.traceRequest === undefined ? {} : { traceRequest: (request, options) => real.traceRequest?.(request, options) }),
+    ...(streaming === undefined
+      ? {}
+      : { streamCompletion: (request, options) => streaming.streamCompletion(request, options) }),
   };
   return Object.freeze(wrapper);
 }

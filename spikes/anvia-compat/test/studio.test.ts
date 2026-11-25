@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createStudioSession } from '../src/studio/session.js';
+import type { CompletionModel } from '@anvia/core';
+import { createStudioSession, opaqueModelForStudio } from '../src/studio/session.js';
 import { createChatModel } from '../src/model-config.js';
 import { SCOUTING_AGENT_ID } from '../src/agent.js';
 import { SCOUTING_PIPELINE_ID } from '../src/pipeline.js';
@@ -44,5 +45,20 @@ describe('Studio registration (offline)', () => {
       const body = await response.text();
       expect(body, path).not.toContain(FAKE_KEY);
     }
+  });
+});
+
+describe('Studio streaming wrapper (offline)', () => {
+  it('forwards streamCompletion from the real model so Agent.stream() can run', () => {
+    const model = createChatModel({ apiKey: FAKE_KEY, baseUrl: 'https://gateway.devscale.id/v1', modelId: 'deepseek-v4.1-flash' });
+    const wrapped = opaqueModelForStudio(model);
+    expect(typeof wrapped.streamCompletion).toBe('function');
+    expect(wrapped.capabilities.streaming).toBe(true);
+    expect(JSON.stringify(wrapped)).not.toContain(FAKE_KEY);
+  });
+
+  it('does not claim streamCompletion for a non-streaming model', () => {
+    const nonStreaming = { provider: 'fake', modelId: 'no-stream', capabilities: {}, completion: async () => ({}) } as unknown as CompletionModel;
+    expect(opaqueModelForStudio(nonStreaming).streamCompletion).toBeUndefined();
   });
 });
