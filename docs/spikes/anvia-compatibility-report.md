@@ -52,6 +52,8 @@
 
 **Gate status (after Prompt 04C):** Studio integration (§13) is **PASS at the API level**: the existing Agent and Pipeline are registered, run through Devscale, and show traces, errors and MCP discovery in Studio's endpoints. The Studio UI was **not visually inspected** (no browser tool was available in this session), so it is not claimed as verified. Qdrant remains **PENDING**.
 
+**Gate status (after Prompt 06, final compatibility verification):** technical gate **PASS**; see §15. Two UI checks (Lens dashboard, Studio playground) are **PENDING USER VERIFICATION** and are not counted as PASS.
+
 **Gate status (after Prompt 05):** Qdrant and the embedding adapter (§14) are **PASS** for local vector storage, real embeddings, ingestion, retrieval and failure handling at the spike's synthetic scale. Still open: payload indexes (row 36), the Lens dashboard and Studio UI visual checks, and the full 14-document knowledge base (out of scope for this spike).
 
 ## 2. Environment
@@ -784,3 +786,169 @@ These are spike numbers from one machine, not production targets.
 | Commit / push / PR | not done; awaiting the user's request. |
 
 **Status: PASS** for Qdrant (local, pinned, authenticated, persistent, health verified), the MiniLM embedding path, ingestion and idempotence, semantic retrieval with metadata filters, dimension and connection failure handling, and latency measurement. **Payload indexes are NOT DONE.** Prompt 06 was not started.
+
+## 15. Prompt 06 — Final Anvia compatibility verification
+
+**Executed:** 2026-11-25, branch `main` (after merge of PR #2, `431b324`), WSL2 Linux x64. Nothing below is PASS without the command output listed.
+
+### 15.1 Final dependency versions
+
+| Component | Version | Notes |
+|---|---|---|
+| Node.js / pnpm | `v26.13.1` / `12.10.1` | repo floor `>=24` |
+| TypeScript | `7.0.2` | `skipLibCheck: false`, strict |
+| `@anvia/core` | `1.18.0` | unchanged across prompts 02–06 |
+| `@anvia/openai` | `1.3.8` | Devscale Gateway, chat API |
+| `@anvia/mcp` | `1.2.7` | with `@modelcontextprotocol/server` `2.4.0` |
+| `@anvia/lens` | `1.2.5` | backend self-hosted v0.19.0 |
+| `@anvia/studio` | `1.3.26` | API-level integration |
+| `@anvia/qdrant` | `1.2.1` | exact |
+| `@anvia/transformers` | `1.1.7` | exact |
+| `@huggingface/transformers` | `4.3.2` | transitive |
+| `@qdrant/js-client-rest` | `1.20.0` | transitive |
+| `onnxruntime-node` | `1.30.0` | transitive, CPU |
+| `zod` | `4.6.7` | exact |
+| Qdrant server | `1.20.0` (`qdrant/qdrant:v1.20.0@sha256:9bfc89f9…4cd2`) | |
+| Model | `deepseek-v4.1-flash` (Devscale, Agent) | unchanged |
+| Embedding model | `Xenova/all-MiniLM-L6-v2`, 384-dim, mean, normalized | spike only |
+
+Dependency consistency: `pnpm install --frozen-lockfile` → exit 0, "Lockfile passes supply-chain policies", "Lockfile is up to date". Release policy: `minimumReleaseAge: 20160` (14 days), `savePrefix: ''`, `engineStrict: true`. No dependency was upgraded in this prompt.
+
+### 15.2 Commands executed and results
+
+| Command | Result |
+|---|---|
+| `pnpm verify` (root: typecheck, build, offline) | **exit 0**, **49/49** offline tests |
+| `pnpm test:live` (full live suite, verbose run) | **exit 0**, **28/28** live tests across 4 files |
+| `pnpm trace:lens` (real model, real MCP, real Lens) | **exit 0**, `flush: ok`, `close: ok`; new traces `cbffde00…` (ok) and `ba6516d2…` (error) |
+| `pnpm eval` | **exit 0**: real tool call executed, `evidence_refs_match` pass, `expected_fixture_values` pass |
+| `pnpm eval:inject-failure` | **exit 1** (intended): `expected 8.65, cited 7.65` → fail |
+| Studio server (`dist/studio/entry.js`, `127.0.0.1:4021`) | `/health`, `/agents`, `/pipelines`, `/tools`, `/traces`, `/playground` all **200**; process stopped afterwards and port closed |
+| Qdrant | `/readyz` **200**; `/collections` without key **401**, with key **200**; Docker health `healthy`; spike collection `points_count: 12` |
+| Frozen lockfile install | **exit 0** |
+
+Safety-critical offline tests, verified by name (`--reporter=verbose`):
+- `runtime-limits`: 5 sequential tool calls allowed, 6th rejected before execution; 6 parallel calls in one model turn → 6th rejected; per-run timeout cancels an in-flight MCP call (server observes cancellation) and a hanging model call; evidence validation rejects hallucinated IDs, altered numbers, and missing tool calls.
+- `mcp-transport`: initialize and single read-only tool discovery; malformed, missing, unknown, and internal-failure inputs return tool errors; the client rejects non-object arguments; **model credentials not passed to the MCP child process**; clean disconnect and child process exit.
+- `pipeline-input`: real (non-synthetic) dataset, non-`SYN-` player ID, inverted age range, and age outside 16–25 are rejected before any stage runs; missing model variables are named without values.
+- `preprocess`: deterministic filtering and per-90 computation; evidence assertion rejects invented players and altered numbers; Zod rejects malformed Agent output.
+- `redact`, `env`, `studio` (model key absent from all 13 endpoints), `lens-tracing` (linked trace, flush on close, failing MCP span, redacted errors), `evals`.
+
+Live tests, verbose:
+- `devscale`: exact model ID; real chat completion through the adapter; plain-text Agent; structured output validated locally; schema-valid JSON failing a local Zod rule rejected; truncated response (`finish_reason=length`) rejected; Pipeline end-to-end; HTTP 401 → `ProviderError` without leaking the key; HTTP 400 unknown model not substituted.
+- `mcp-agent`: real `deepseek-v4.1-flash` invokes the MCP tool and uses the genuine result; failing tool handled; 6th real tool attempt rejected; real timeout cancels the run.
+- `lens-evals`: successful run → one linked trace containing the MCP span; failed run (401) → linked error trace, key redacted; eval CLI exit 0 on pass and exit 1 on deliberately wrong expected value.
+- `knowledge`: 11 tests (see 15.4).
+
+### 15.3 Lens and trace correlation (real backend, ClickHouse)
+
+Read directly with `clickhouse-client` in `wonderscout-lens-clickhouse-1`, database `lens`. The `running` row for `step.preprocess` seen in `trace_summaries` was a superseded summary version; `FINAL` shows `ok`.
+
+Latest successful trace `cbffde00054b8219ca82b1269f5c523b`, 11 spans, one tree:
+
+```
+pipeline.synthetic-scouting-pipeline   agent   ok  (root)
+├─ step.preprocess                     span    ok
+├─ parallel.assess                     span    ok
+│  ├─ branch.assessment                span    ok
+│  │  └─ agent.scouting-agent          agent   ok
+│  │     └─ agent.Synthetic Scouting Agent  agent ok
+│  │        ├─ model.turn.1            generation ok
+│  │        ├─ tool.get_demo_player_stats    tool ok  (MCP)
+│  │        └─ model.turn.2            generation ok
+│  └─ branch.prepared                  span    ok
+└─ step.validate-output                span    ok
+```
+
+Latest failed trace `ba6516d2cbc1927b8ce7c2f8f3868b66`: 8 spans, `error`, 6 error spans, no tool span (fails before tool call).
+
+Linkage check across the last 6 spike traces: **0 orphan spans** (every non-root `parent_span_id` resolves inside its own trace). Pipeline, Agent, MCP tool, and model-turn spans share one trace ID.
+
+Secret check on stored data: spans of service `wonderscout-anvia-compat-spike` contain **0 hits** for the OpenAI-compatible key, the Lens public key, or the Lens secret key (checked in `span_attributes`, `events`, `resource_attributes`, `input`, `output`). Tracked files contain **0 occurrences** of either key.
+
+### 15.4 Qdrant and embeddings
+
+- Health and auth: §15.2 (`readyz` 200; unauthenticated 401; key 200; Docker healthy).
+- Embedding and ingestion: 12 chunks (4 fictional documents), dedicated collection `wonderscout_spike_knowledge_v1`, cosine, 384-dim. Re-ingestion leaves the count at 12.
+- Retrieval: the expected document is top-1 for each of 4 fixed queries and in the top 3. Scores are non-increasing.
+- Metadata filter: `roleId = inside-forward` returns 3 hits, all `inside-forward`, with `documentVersion`, `usageRights`, `heading`, and `document` preserved.
+- Rejections: 10-dim upsert and 10-dim query both rejected; a closed port (`127.0.0.1:1`) fails.
+- Latency (CPU, WSL2): model init 414 ms cached (73 s on first download); ingest embed 141 ms and upsert 42 ms for 12 chunks; search p50 48 ms, max 50 ms (top-5, 20 repeats).
+
+Payload indexes: **deferred** to the production knowledge-base work, as instructed. Not implemented.
+
+### 15.5 Compatibility matrix
+
+| # | Area | Verdict | Evidence |
+|---|---|---|---|
+| 1 | Agent + Pipeline with `deepseek-v4.1-flash` via Devscale | **PASS** | §15.2 live `devscale` (9 tests), `trace:lens` exit 0 |
+| 2 | MCP producer and consumer, real model-driven tool calling | **PASS** | §15.2 live `mcp-agent`, offline `mcp-transport` |
+| 3 | Runtime timeout, cancellation, max 5 tool calls | **PASS** | §15.2 `runtime-limits` (offline) and `mcp-agent` (live, real 6th attempt rejected) |
+| 4 | Lens tracing with the real backend (successful and failed traces) | **PASS** | §15.3 (ClickHouse rows, linked spans) |
+| 5 | Evals: pass and intentional failure | **PASS** | `pnpm eval` exit 0; `eval:inject-failure` exit 1; §15.2 |
+| 6 | Qdrant health and auth | **PASS** | §15.2 |
+| 7 | Local MiniLM embeddings, ingestion, retrieval, metadata filter, idempotency | **PASS** | §15.4 |
+| 8 | TypeScript 7 strict, typecheck, build | **PASS** | `pnpm verify` |
+| 9 | Dependency consistency | **PASS** | frozen-lockfile install exit 0 |
+| 10 | Invalid inputs rejected before any stage | **PASS** | `pipeline-input` (offline) |
+| 11 | Provider and MCP errors propagate | **PASS** | live `devscale` 401 and 400; MCP error tests |
+| 12 | Local Zod and evidence validation enforced | **PASS** | `preprocess`, `runtime-limits`, live Zod-rule and truncation tests |
+| 13 | Devscale structured JSON reliability (known limitation) | **PASS** (mitigated) | Local validation is mandatory; the provider is not trusted for JSON (see 15.6) |
+| 14 | Lens traces correlated and safely redacted | **PASS** | §15.3 (0 orphans; 0 key hits) |
+| 15 | Secrets not tracked or exposed | **PASS** | §15.3 and §15.7 |
+| 16 | MCP processes and Lens clients clean up | **PASS** | `mcp-transport` child exit; `lens` flush and close `ok` |
+| 17 | Studio API registration and execution | **PASS** (API) | §15.2 endpoints 200; `studio` offline key-absence tests |
+| 18 | Lens dashboard visual check | **PENDING USER VERIFICATION** | not opened in a browser |
+| 19 | Studio playground visual check (run, graph, traces) | **PENDING USER VERIFICATION** | not opened in a browser |
+| 20 | Qdrant payload indexes | **NOT DONE (deferred by design)** | §15.4 |
+| 21 | Agent + RAG integration | **OUT OF SCOPE** | per prompt |
+
+Summary: **PASS 17**, **PENDING USER VERIFICATION 2**, **NOT DONE 1 (deferred)**, **FAIL 0**, **BLOCKED 0**.
+
+### 15.6 Known limitations and mitigations
+
+- **Devscale does not reliably enforce structured JSON.** Mitigation: every Agent output passes local Zod and evidence validation before a Pipeline returns it. Tests cover schema-valid but rule-invalid output, truncation, and fabricated or altered evidence. This is a provider limitation, not solved by the provider.
+- **Single-candidate and synthetic data only.** The eval scenario has one candidate, so no ranking is tested.
+- **Embedding model not exposed by dimension at runtime.** Mitigation: the spike enforces 384 in code.
+- **Qdrant on loopback with an API key**, local development only.
+- **Latency numbers** come from one WSL2 CPU machine, not a production target.
+- **Lens and Studio UI** are verified only at the storage and API level.
+
+### 15.7 Secrets and git hygiene
+
+- Key values were read from `.env` files and checked by match count only. They were not printed.
+- Ignored and not tracked: root `.env`, `infra/lens/.env`, `infra/qdrant/.env`, `spikes/anvia-compat/dist/`.
+- Tracked files contain 0 occurrences of the OpenAI-compatible key or the Lens secret key.
+- Stored Lens spans for this service contain 0 key hits.
+
+### 15.8 Outstanding technical debt
+
+| Item | Owner / when |
+|---|---|
+| Qdrant payload indexes (`role_id`, `document_id`, `document_version`, `source`, `status`) | before production KB |
+| Qdrant collection reset in tests uses raw REST `DELETE` (no adapter drop method) | test-only, low |
+| Chunking is one chunk per `##` section; TDD token-based splitting (300–600 tokens) not implemented | production KB |
+| `roleId` stored as `''` for null-role documents; `''` filter would match both | production KB |
+| OTel version skew between Anvia and the Lens stack | carry-over from §12 |
+| TDD §10.4 attributes | carry-over |
+| Cost measurement | carry-over |
+| Full 14-document KB, Recall@5 ≥ 0.85 | next milestone |
+
+### 15.9 Remaining manual verification
+
+1. Open the Lens dashboard at `http://localhost:3080`, find `synthetic-scouting-pipeline`, and confirm 3 `ok` and 3 `error` traces matching the IDs in §12.3 and §15.3 (the newest pair is `cbffde00…` and `ba6516d2…`).
+2. Open the Studio playground (`pnpm studio`, then `http://127.0.0.1:4021/playground`): run the Agent with a synthetic request, confirm the Pipeline graph, MCP tools, and trace entries. Note the known risk in §13.7 (free-form chat may produce non-JSON output and fail validation).
+
+Neither check is counted as PASS until done.
+
+### 15.10 Final M1 compatibility gate decision
+
+**Technical compatibility gate: PASS.** Every component in the Prompt 06 scope has execution evidence from this session. Typecheck, build, 49 offline tests, and 28 live tests pass, and the trace, eval, Studio, and Qdrant checks behave as intended.
+
+**Not claimed:** production readiness. This is a spike with synthetic data, a local Qdrant, a local Lens backend, and a provider with a known JSON-reliability gap.
+
+**Recommendation: proceed to Data Foundation**, with two conditions:
+1. The user completes the two pending UI checks (§15.9), or explicitly accepts them as carry-over.
+2. Payload indexes and the token-based chunking are built into the Data Foundation work before the production knowledge base is loaded.
+
+Stop point: Prompt 06 is complete. Prompt 07 (or the next milestone) was not started.
