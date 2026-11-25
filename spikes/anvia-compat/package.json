@@ -8,9 +8,23 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run"
+    "test": "tsc -p tsconfig.build.json && vitest run",
+    "test:live": "tsc -p tsconfig.build.json && vitest run --config vitest.live.config.ts",
+    "probe:gateway": "node --env-file=../../.env dist/scripts/probe-gateway.js",
+    "demo:pipeline": "node --env-file=../../.env dist/scripts/run-pipeline.js",
+    "trace:lens": "node --env-file=../../.env dist/scripts/run-lens-traces.js",
+    "probe:structured": "node --env-file=../../.env dist/scripts/probe-structured-output.js",
+    "eval": "node --env-file=../../.env dist/scripts/run-evals.js",
+    "eval:inject-failure": "node --env-file=../../.env dist/scripts/run-evals.js --inject-wrong-expected",
+    "studio": "node --env-file=../../.env dist/studio/entry.js"
   },
   "dependencies": {
+    "@anvia/core": "1.18.0",
+    "@anvia/lens": "1.2.5",
+    "@anvia/mcp": "1.2.7",
+    "@anvia/openai": "1.3.8",
+    "@anvia/studio": "1.3.26",
+    "@modelcontextprotocol/server": "2.4.0",
     "zod": "4.6.7"
   }
 }

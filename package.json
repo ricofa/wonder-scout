@@ -10,7 +10,8 @@
     "typecheck": "pnpm -r --parallel run typecheck",
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
-    "verify": "pnpm typecheck && pnpm build && pnpm test"
+    "verify": "pnpm typecheck && pnpm build && pnpm test",
+    "test:live": "pnpm -r run test:live"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

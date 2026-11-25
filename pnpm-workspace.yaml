@@ -6,3 +6,6 @@ packages:
 # Exact versions only; lockfile is the source of truth (TDD §2.1 version policy).
 savePrefix: ''
 engineStrict: true
+# Supply-chain cooldown: only resolve versions published >= 14 days ago
+# (applies to transitive dependencies too). Value in minutes.
+minimumReleaseAge: 20160
