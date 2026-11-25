@@ -1,0 +1,29 @@
+# Local-only Qdrant for the WonderScout AI compatibility spike (TDD §6, prompt 05).
+# Pinned to the official image tag AND digest (qdrant/qdrant:v1.20.0). Data persists in the
+# named volume `wonderscout-qdrant_qdrant_storage`; never run `docker compose down -v` or
+# `docker volume rm` on it. See infra/qdrant/README.md.
+name: wonderscout-qdrant
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.20.0@sha256:9bfc89f9914fc14876a88c05270685921a55b8877b254a98bcc1cc2f0a424cd2
+    restart: unless-stopped
+    ports:
+      # Loopback only: REST 6333, gRPC 6334. Not reachable from the LAN.
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    environment:
+      # Required for every request. Value comes from infra/qdrant/.env (gitignored).
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?set QDRANT_API_KEY in infra/qdrant/.env}
+      QDRANT__SERVICE__READ_ONLY_API_KEY: ${QDRANT_READ_ONLY_API_KEY:?set QDRANT_READ_ONLY_API_KEY in infra/qdrant/.env}
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+volumes:
+  qdrant_storage:

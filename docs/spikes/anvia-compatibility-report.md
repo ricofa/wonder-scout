@@ -39,13 +39,20 @@
 | 28 | Lens: ingestion in an **actual Anvia Lens backend** (self-hosted v0.19.0 at `localhost:3080`): 3 successful + 3 failed Pipeline traces stored with linked spans, redaction and flush | **PASS** (storage verified in ClickHouse; visual check in the dashboard UI pending) | §12 |
 | 29 | Evals: deterministic case verifying real MCP execution + matching `evidenceRefs`, real model, **exit 0** | **PASS** | §11.4 |
 | 30 | Evals: deliberately wrong expected value → metric fail, **exit 1** | **PASS** | §11.4 |
-| — | Qdrant + embedding adapter (rest of TDD §2.3) | **PENDING** | §8 |
+| 31 | Qdrant (`qdrant/qdrant:v1.20.0`, digest-pinned) local-only, persistent volume, auth enforced, health green | **PASS** | §14.2 |
+| 32 | Embeddings: `@anvia/transformers` + `Xenova/all-MiniLM-L6-v2`, 384-dim, mean-pooled, normalized (real model) | **PASS** | §14.3 |
+| 33 | Synthetic knowledge ingested via `@anvia/qdrant` into dedicated collection; deterministic IDs; re-ingest idempotent | **PASS** | §14.4, §14.5 |
+| 34 | Semantic retrieval: expected documents in top-3 for 4 fixed queries; `roleId` metadata filter; metadata preserved | **PASS** | §14.5 |
+| 35 | Dimension mismatch rejected (upsert and query); Qdrant connection failure surfaced | **PASS** | §14.5 |
+| 36 | Qdrant payload indexes for filter fields (TDD §6.2) | **NOT DONE** | §14.7 |
 
 **Gate status (after Prompt 04B.3):** the Agent, Pipeline, model, MCP/tool-calling, **Lens instrumentation** (now delivered to the real self-hosted backend, §12), and **Evals** portions of §2.3 are **PASS**. One item keeps the full §2.3 gate **open**:
 - **Qdrant:** still **PENDING**.
 - **Dashboard visual check:** the traces are stored in the backend, but the Lens dashboard UI was not inspected in a browser (see §12.4).
 
 **Gate status (after Prompt 04C):** Studio integration (§13) is **PASS at the API level**: the existing Agent and Pipeline are registered, run through Devscale, and show traces, errors and MCP discovery in Studio's endpoints. The Studio UI was **not visually inspected** (no browser tool was available in this session), so it is not claimed as verified. Qdrant remains **PENDING**.
+
+**Gate status (after Prompt 05):** Qdrant and the embedding adapter (§14) are **PASS** for local vector storage, real embeddings, ingestion, retrieval and failure handling at the spike's synthetic scale. Still open: payload indexes (row 36), the Lens dashboard and Studio UI visual checks, and the full 14-document knowledge base (out of scope for this spike).
 
 ## 2. Environment
 
@@ -656,3 +663,124 @@ Pipeline runs are not traced by Studio's trace store (the pipeline has no observ
 | Qdrant + embedding adapter | **PENDING** (TDD §2.3 step 8) |
 
 **Status: PASS at the API level** for registration, Devscale runs, MCP discovery and invocation, controlled errors, pipeline stages, and key isolation. **UI verification is not done** and is not claimed.
+
+## 14. Prompt 05 — Qdrant and embeddings compatibility (synthetic only)
+
+**Branch:** `spike/anvia-qdrant-05`. **Result:** PASS for the listed scope; payload indexes NOT DONE (§14.7). Nothing committed or pushed.
+
+### 14.1 Versions and dependencies
+
+| Package / image | Version | Source of pin |
+|---|---|---|
+| `@anvia/core` | `1.18.0` | existing (unchanged) |
+| `@anvia/qdrant` | `1.2.1` (exact) | 14-day policy; `1.3.0` published 2026-11-24, excluded |
+| `@anvia/transformers` | `1.1.7` (exact) | 14-day policy; `1.2.0` published 2026-11-24, excluded |
+| `@huggingface/transformers` | `4.3.2` | transitive of `@anvia/transformers` |
+| `@qdrant/js-client-rest` | `1.20.0` | transitive of `@anvia/qdrant` |
+| `onnxruntime-node` | `1.30.0` | transitive (CPU; `ONNXRUNTIME_NODE_INSTALL=skip`) |
+| Qdrant server image | `qdrant/qdrant:v1.20.0@sha256:9bfc89f9914fc14876a88c05270685921a55b8877b254a98bcc1cc2f0a424cd2` | `v1.20.1` (pushed 2026-11-13) and `v1.20.2` (2026-11-16) are inside the 14-day window, excluded |
+
+Peer compatibility: `@anvia/qdrant` peers `@anvia/core ^1.17.2`; `@anvia/transformers` peers `@anvia/core ^1.18.0`. Both satisfied by Core `1.18.0`. Core was **not** upgraded.
+
+Build-script approval: `pnpm-workspace.yaml` `allowBuilds` lists `onnxruntime-node` and `protobufjs`, written by `pnpm approve-builds`. Both postinstall scripts were read first: onnxruntime-node runs `script/install` (CUDA download, skipped with `ONNXRUNTIME_NODE_INSTALL=skip`); protobufjs only prints a warning.
+
+### 14.2 Qdrant configuration and health
+
+Files: `infra/qdrant/docker-compose.yml`, `infra/qdrant/README.md`. Gitignored secrets: `infra/qdrant/.env` (two random keys) and the repo-root `.env` (`QDRANT_URL`, `QDRANT_API_KEY`, values not printed).
+
+| Check | Result |
+|---|---|
+| Compose project | `wonderscout-qdrant`; separate from `infra/lens` |
+| Ports | `127.0.0.1:6333` (REST) and `127.0.0.1:6334` (gRPC); no listener on `0.0.0.0` or `::` |
+| Persistent volume | `wonderscout-qdrant_qdrant_storage` |
+| Docker healthcheck | `healthy` (`/readyz` over raw TCP) |
+| `GET /readyz` with and without key | 200 / 200 |
+| `GET /collections` without key or with wrong key | **401** / **401** (auth enforced) |
+| Version | `1.20.0` (commit `222b2e44…`) |
+| Lens containers | 7 still running, untouched |
+
+### 14.3 Embedding model (real, no mocks)
+
+| Field | Value |
+|---|---|
+| Provider | `transformers` (`@anvia/transformers`, `loadTransformersEmbeddingModel`) |
+| Model | `Xenova/all-MiniLM-L6-v2` |
+| Dimensions | **384** (verified at runtime; the model object does not expose `dimensions`, so the spike enforces 384 itself) |
+| Pooling | `mean` |
+| Normalization | `normalize: true` (unit length, verified: norm 1.0000) |
+| Metric | `cosine` |
+| Max batch size | 16 |
+| `localFilesOnly` | not set (first load downloaded the model; later loads use the cache) |
+
+The Devscale Agent model (`deepseek-v4.1-flash`) was not changed or used for embeddings.
+
+### 14.4 Synthetic knowledge
+
+Four fictional methodology documents (`src/knowledge/corpus.ts`), all with `usage_rights: internal-synthetic-spike`, `seasons: [synthetic]`, `source_urls: []`, version `1.0.0`:
+
+| `document_id` | `role_id` | Chunks |
+|---|---|---|
+| `progressive-midfielder` | `progressive-midfielder` | 3 |
+| `inside-forward` | `inside-forward` | 3 |
+| `evidence-confidence-rules` | `null` (stored as `''`) | 3 |
+| `metric-glossary` | `null` (stored as `''`) | 3 |
+
+Total: **12 chunks**, one per `##` section. Frontmatter is validated with Zod (`document_id` kebab-case, semver `version`, required fields); invalid frontmatter is rejected with field names only.
+
+Chunk ID = `sha256(document_id|version|chunk_number|text_hash)`, used as the Qdrant point ID source. Dedicated collection: `wonderscout_spike_knowledge_v1` (not the TDD production name `wonderscout_knowledge_v1`). Distance metric: cosine.
+
+### 14.5 Test evidence
+
+Commands:
+- `pnpm verify` (root): typecheck, build, offline tests. **49/49 passed.**
+- `pnpm test:live` (includes the knowledge suite and the existing Devscale and Lens suites): **28/28 passed**.
+- `npx vitest run --config vitest.live.config.ts test/live/knowledge.live.test.ts`: **11/11 passed** (real model, real Qdrant).
+
+Offline (`test/knowledge.offline.test.ts`): frontmatter parsing; 12-chunk count per document; metadata on each chunk; deterministic chunk IDs that change when content changes; invalid frontmatter rejected; dimension guard (10 rejected, 384 accepted); `roleId` eq-filter shape; connection to a closed port (`127.0.0.1:1`) fails.
+
+Live (`test/live/knowledge.live.test.ts`):
+- Embedding: 384 dimensions, unit length.
+- Ingest: 12 points in the dedicated collection; `countPoints` = 12.
+- Idempotence: two more ingests of the same content leave the count at 12.
+- Retrieval (top-3, fixed expected top-1 chosen before the run):
+
+| Query (abridged) | Expected top-1 `document_id` | Result |
+|---|---|---|
+| midfielder moving the ball forward beyond the defensive line | `progressive-midfielder` | PASS |
+| minutes before evidence is reliable | `evidence-confidence-rules` | PASS |
+| how a per-90 value is calculated | `metric-glossary` | PASS |
+| wide forward cutting inside to shoot | `inside-forward` | PASS |
+
+  Scores are non-increasing; the expected document is in the top 3 for each query.
+- `roleId = inside-forward` filter returns exactly 3 hits, all `inside-forward`, with `documentVersion`, `usageRights`, `heading` and `document` preserved.
+- Dimension mismatch on upsert (10-dim vector) is rejected with `dimension`; the point count stays at 12.
+- Dimension mismatch on query is rejected with `dimension mismatch for query`.
+
+### 14.6 Latency (single local machine, WSL2, CPU)
+
+| Operation | Value |
+|---|---|
+| Model init, first run (download + load) | 73,067 ms (one-time download, not representative) |
+| Model init, cached | 414 ms |
+| Embed 2 texts (earlier probe) | 32 ms |
+| Ingest 12 chunks: embed | 141 ms |
+| Ingest 12 chunks: upsert | 42 ms |
+| Search, top-5, 20 repeats: p50 / max | 48 ms / 50 ms |
+
+These are spike numbers from one machine, not production targets.
+
+### 14.7 Limitations and open items
+
+| Item | Status |
+|---|---|
+| Payload indexes on `role_id`, `document_id`, `document_version`, `source`, `status` (TDD §6.2) | **NOT DONE.** `@anvia/qdrant` exposes no index method, so this needs the native Qdrant client or REST calls. Filters work without indexes at this size; add them before the full knowledge base. |
+| Collection reset in tests | done with a raw REST `DELETE`, because the adapter has no drop method. Test-only. |
+| Chunking | one chunk per `##` section; no token-based splitting (synthetic sections are short). The TDD's 300–600 token rule applies to the real corpus. |
+| `roleId` `''` for documents with `role_id: null` | filtering on `''` would return both null-role documents. Not used by any test. |
+| Embedding model not exposed `dimensions` at runtime | the spike enforces 384 in code. |
+| Qdrant on loopback only; API key required | local development only, not a production deployment. |
+| Lens dashboard and Studio UI visual checks | not done (carry-over from §12.4 and §13.7). |
+| Full 14-document KB, Recall@5 ≥ 0.85 target | out of scope for prompt 05. |
+| Commit / push / PR | not done; awaiting the user's request. |
+
+**Status: PASS** for Qdrant (local, pinned, authenticated, persistent, health verified), the MiniLM embedding path, ingestion and idempotence, semantic retrieval with metadata filters, dimension and connection failure handling, and latency measurement. **Payload indexes are NOT DONE.** Prompt 06 was not started.

@@ -9,3 +9,7 @@ engineStrict: true
 # Supply-chain cooldown: only resolve versions published >= 14 days ago
 # (applies to transitive dependencies too). Value in minutes.
 minimumReleaseAge: 20160
+
+allowBuilds:
+  onnxruntime-node: true
+  protobufjs: true
